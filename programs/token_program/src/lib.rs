@@ -1,5 +1,8 @@
-use anchor_lang::{prelude::*, solana_program::pubkey};
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_lang::{prelude::*, solana_program::pubkey::Pubkey};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{transfer, Mint, Token, TokenAccount, Transfer},
+};
 
 declare_id!("82X9jUhf5wT8n3RvnDDhh7wYtPJPwTqFLUWTgaGLWkts");
 
@@ -9,7 +12,7 @@ pub mod token_program {
 
     // initialize program signer account
     //  expected accounts:
-    //      -> {payer_account, isSigner, ?isWritable}
+    //      -> {payer_account, isSigner, isWritable}
     //      -> {program.signer_account, !isSigner, isWritable}
     //      -> {system_account, !isSigner, !isWritable}
     //  state accounts:
@@ -29,6 +32,21 @@ pub mod token_program {
     //      ->                  :           -> space
     //      ->                  :           -> program_id               :owner:
     //      -> INIT STATE       : INIT      -> isInitialized = true, isSigner = true, bump
+    pub fn initialize_program_signer(
+        ctx: Context<InitializeProgramSigner>,
+        bump: u8,
+    ) -> Result<()> {
+        ctx.accounts.new_program_signer.is_initialized = true;
+        ctx.accounts.new_program_signer.is_signer = true;
+        ctx.accounts.new_program_signer.bump = bump;
+
+        msg!(
+            "program signer is initialized new pubkey: {}",
+            ctx.accounts.new_program_signer.key()
+        );
+
+        return Ok(());
+    }
 
     // initialize associated token accounts
     //  expected accounts:
@@ -53,32 +71,62 @@ pub mod token_program {
     //      ->                  :           -> program.signer.pubkey   :wallet_address:
     //      ->                  :           -> token_mint.pubkey
     //      ->                  :           -> token_program_id
+    pub fn initialize_program_associate_token_account(
+        ctx: Context<InitializeProgramAssociatedTokenAccount>,
+    ) -> Result<()> {
+        msg!(
+            "program associated token account intialzied new pubkey: {}",
+            ctx.accounts.program_associated_token_account.key()
+        );
+
+        return Ok(());
+    }
 
     // initialize locked token accounts
     //  expected accounts:
     //      -> {user_account, isSigner, isWritable}
-    //      -> {user.associated_token_account, !isSigner, isWritable}
-    //      -> {program.signer.associated_token_account, !isSigner, isWritable}
     //      -> {program.locked_account, !isSigner, isWritable}
+    //      -> {user.associated_token_account, !isSigner, !isWritable}
+    //      -> {program.signer.associated_token_account, !isSigner, !isWritable}
     //      -> {system_program_account, !isSigner, !isWritable}
     //  state Accounts:
     //      -> [a] program.locked_account
     //      -> [b] user.associated_token_account
     //      -> [c] program.signer.associated_token_account
     //  state accounts derived:
-    //      -> [a] [user_account.pubkey, program.signer_account.pubkey, token_mint_account.pubkey, "locked"], program_id
+    //      -> [a] [user.pubkey, program.signer.pubkey, token_mint.pubkey, "locked"], program_id
     //  expected accounts init:
     //      -> program.locked_account       : intentional_use [state]
     //  program signer:
     //  validation:
-    //  process: 
+    //      ->  user.associated_token_account.mint == program.associated_token_account.mint
+    //      ->  program.locked_account.pubkey == derived.pubkey
+    //  process: (input: token_mint.pubkey)
     //      -> create account   : INVOKE    -> system_program::create_account
     //      ->                  : INPUT     -> user.pubkey             :from_pubkey:
     //      ->                  :           -> program.locked.pubkey   :to_pubkey:
     //      ->                  :           -> lamports
     //      ->                  :           -> space
     //      ->                  :           -> program_id               :owner:
-    //      -> init state       : INIT      -> 
+    //      -> init state       : INIT      ->
+    pub fn initialize_locked_token_account(
+        ctx: Context<InitializeLockedTokenAccount>,
+    ) -> Result<()> {
+        let a = ctx.accounts;
+
+        a.program_locked_account.authority = a.program_signer.key();
+        a.program_locked_account.token_mint = a.token_mint.key();
+        a.program_locked_account.amount = 0;
+
+        msg!(
+            "program locked account intialzied new pubkey: {}",
+            a.program_locked_account.key()
+        );
+
+        msg!("locked amount: {}", a.program_locked_account.amount);
+
+        return Ok(());
+    }
 
     // stake token
     //  expected accounts:
@@ -97,7 +145,7 @@ pub mod token_program {
     //      -> [a] [user.pubkey, token_program_id, token_mint.pubkey], associated_token_program_id              : canonincal bump
     //      -> [a] [program.signer.pubkey, token_program_id, token_mint.pubkey], associated_token_program_id    : canonincal bump
     //      -> [c] [user.pubkey, token_mint.pubkey, program.signer.pubkey, "locked"], program_id                : canonincal bump
-    //  expected accounts init: 
+    //  expected accounts init:
     //      -> ?program.signer.associated_token_account     : intentional_use [state]
     //      -> ?program.user+token.locked_account           : intentional_use [state]
     //  program signer:
@@ -112,8 +160,26 @@ pub mod token_program {
     //      ->          :           -> user_account                                 :authority:
     //      -> update   : --        -> program.user+token.locked_account.amount  =  amount
     //      ->          :           -> program.user+token.lcoked_account.authority  =  user.pubkey
-    pub fn initializeProgramSigner(ctx: Context<InitializeProgramSigner>) -> Result<()> {
-        Ok(())
+    pub fn stake_token(ctx: Context<StakeToken>, amount: u64) -> Result<()> {
+        let a = ctx.accounts;
+
+        let cpi_program = a.token_program.to_account_info();
+
+        let cpi_accounts = Transfer {
+            from: a.user_associated_token.to_account_info(),
+            to: a.program_associated_token.to_account_info(),
+            authority: a.user.to_account_info(),
+        };
+
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+
+        transfer(cpi_ctx, amount)?;
+
+        a.locked_token.amount += amount;
+
+        msg!("locked amount: {}", a.locked_token.amount);
+
+        return Ok(());
     }
 
     // unstake token
@@ -145,12 +211,39 @@ pub mod token_program {
     //      ->              :           -> user.associated_token_account                :to:
     //      ->              :           -> program.signer_account                       :authority:
     //      -> update       : --        -> program.user+token.locked_account.amount  -=  amount
+    pub fn unstake_token(ctx: Context<UnstakeToken>, amount: u64) -> Result<()> {
+        let a = ctx.accounts;
+
+        let bump = a.program_signer.bump.to_le_bytes();
+        let inner=vec!["signer".as_ref(),bump.as_ref()];
+        let outer=vec![inner.as_slice()];
+        let cpi_program = a.associated_token_program.to_account_info();
+
+        let cpi_accounts = Transfer {
+            from: a.program_associated_token.to_account_info(),
+            to: a.user_associated_token.to_account_info(),
+            authority: a.program_signer.to_account_info(),
+        };
+
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &outer.as_ref());
+
+        transfer(cpi_ctx, amount)?;
+
+        a.locked_token.amount -= amount;
+
+        msg!("locked amount: {}", a.locked_token.amount);
+
+        return Ok(());
+    }
+}
+#[error_code]
+pub enum MyError {
+    #[msg("User can't unstake amount more than locked balance.")]
+    AmountTooLarge
 }
 
 #[derive(Accounts)]
-// #[instruction(...)]
 pub struct InitializeProgramSigner<'info> {
-
     #[account(mut)]
     pub payer: Signer<'info>,
 
@@ -168,35 +261,169 @@ pub struct InitializeProgramSigner<'info> {
 
 #[derive(Accounts)]
 pub struct InitializeProgramAssociatedTokenAccount<'info> {
-
     #[account(mut)]
     pub payer: Signer<'info>,
-    
+
+    #[account(
+        constraint = program_signer.is_initialized == true,
+        seeds = [b"signer"],
+        bump = program_signer.bump
+    )]
     pub program_signer: Account<'info, SignerAccount>,
-    
+
     #[account(
         init,
         payer = payer,
-        token::mint = token_mint,
-        token::authority = program_signer,
+        associated_token::mint = token_mint,
+        associated_token::authority = program_signer,
+        associated_token::token_program = token_program,
+        // associated_token::token_program = associated_token_program,
+
     )]
     pub program_associated_token_account: Account<'info, TokenAccount>,
-
     pub token_mint: Account<'info, Mint>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct InitializeLockedTokenAccount<'info> {
-
     #[account(mut)]
-    pub user_account: Signer<'info>,
+    pub user: Signer<'info>,
 
-    pub user_associated_token_account: Account<'info, TokenAccount>,
-    pub program_associated_token_account: Account<'info, TokenAccount>,
+    #[account(
+        seeds = [b"signer"],
+        bump = program_signer.bump
+    )]
+    pub program_signer: Account<'info, SignerAccount>,
+
+    #[account(
+        init,
+        payer = user,
+        space = 8 + 32 + 32 + 8,
+        seeds = [user.key().as_ref(), program_signer.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+    )]
     pub program_locked_account: Account<'info, LockedTokenAccount>,
+
+    #[account(
+        constraint = user_associated_token.mint == program_associated_token.mint,
+        seeds = [user.key().as_ref(), token_program.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+        seeds::program = associated_token_program,
+    )]
+    pub user_associated_token: Account<'info, TokenAccount>,
+
+    #[account(
+        seeds = [
+            program_signer.key().as_ref(), 
+            token_program.key().as_ref(), 
+            token_mint.key().as_ref()
+        ],
+        bump,
+        seeds::program = associated_token_program
+    )]
+    pub program_associated_token: Account<'info, TokenAccount>,
+
+    #[account(
+        constraint = token_mint.key() == user_associated_token.mint && token_mint.key() == program_associated_token.mint
+    )]
+    pub token_mint: Account<'info, Mint>,
+
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct StakeToken<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        seeds = [b"signer"],
+        bump = program_signer.bump
+    )]
+    pub program_signer: Account<'info, SignerAccount>,
+
+    #[account(
+        mut,
+        constraint = user_associated_token.mint == program_associated_token.mint,
+        seeds = [user.key().as_ref(), token_program.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+        seeds::program = associated_token_program,
+    )]
+    pub user_associated_token: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [program_signer.key().as_ref(), token_program.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+        seeds::program = associated_token_program,
+    )]
+    pub program_associated_token: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [user.key().as_ref(), program_signer.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+    )]
+    pub locked_token: Account<'info, LockedTokenAccount>,
+
+    #[account(
+        constraint = token_mint.key() == user_associated_token.mint && token_mint.key() == program_associated_token.mint
+    )]
+    pub token_mint: Account<'info, Mint>,
+
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(amount: u64)]
+pub struct UnstakeToken<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        seeds = [b"signer"],
+        bump = program_signer.bump
+    )]
+    pub program_signer: Account<'info, SignerAccount>,
+
+    #[account(
+        mut,
+        constraint = user_associated_token.mint == program_associated_token.mint,
+        seeds = [user.key().as_ref(), token_program.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+        seeds::program = associated_token_program,
+    )]
+    pub user_associated_token: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [program_signer.key().as_ref(), token_program.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+        seeds::program = associated_token_program,
+    )]
+    pub program_associated_token: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = amount <= locked_token.amount @ MyError::AmountTooLarge,
+        seeds = [user.key().as_ref(), program_signer.key().as_ref(), token_mint.key().as_ref()],
+        bump,
+    )]
+    pub locked_token: Account<'info, LockedTokenAccount>,
+
+    #[account(
+        constraint = token_mint.key() == user_associated_token.mint && token_mint.key() == program_associated_token.mint
+    )]
+    pub token_mint: Account<'info, Mint>,
+
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[account]
@@ -217,59 +444,6 @@ pub struct LockedTokenAccount {
     // staked amount of user
     pub amount: u64,
 }
-// create a token
-// airdrop the token
-
-// create token account for program
-//  -> initialize:: token_account.authority == programId
-// stake the token
-//  -> stake    :: transfer -> from user token account to program token account
-//  ->          :: create   -> state.authority == user.token_account
-// unstake token
-//  -> unstake  :: cpi      ->
-//  ->          :: transfer ->
-
-#[derive(Accounts)]
-pub struct InitializeStakedAccount<'info> {
-    #[account(
-        init,
-        payer = staked_user,
-        space = 8,
-        seeds = [
-                staked_user.key().as_ref(),
-                token_mint.key().as_ref(), 
-                b"balance"
-            ],
-        bump
-
-    )]
-    pub state: Account<'info, BalanceState>,
-
-    #[account(mut)]
-    pub staked_user: Signer<'info>,
-
-    /// CHECK: AccountInfo is the token_mint for token transfer
-    pub token_mint: AccountInfo<'info>,
-
-    /// CHECK: the token account of signed user, debit from account
-    pub token_account: AccountInfo<'info>,
-
-    pub token_program: Program<'info, Token>,
-
-    pub system_program: Program<'info, System>,
-}
-
-pub struct StakeAccount<'info> {
-    #[account(mut, has_one = authority)]
-    pub state: Account<'info, BalanceState>,
-    pub staked_user: Signer<'info>,
-    pub autherizer: AccountInfo<'info>,
-    pub token_mint: AccountInfo<'info>,
-}
-
-
-
-
 
 // For this assessment, you will build a Solana program to allow users to airdrop themselves tokens and then stake/unstake them. Below are the suggested steps and hints to build it.
 
