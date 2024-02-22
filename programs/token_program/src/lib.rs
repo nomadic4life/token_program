@@ -444,15 +444,3 @@ pub struct LockedTokenAccount {
     // staked amount of user
     pub amount: u64,
 }
-
-// For this assessment, you will build a Solana program to allow users to airdrop themselves tokens and then stake/unstake them. Below are the suggested steps and hints to build it.
-
-// Create a Token Account that has a PDA derived from the program as the authority. Hint: the staking pool token account should probably also be a PDA
-
-// When a user “stakes” their tokens, the program should transfer their tokens from the User’s token account and into the program’s token account.
-
-// If a user wants to “unstake” their tokens, the PDA that is assigned the authority over the program’s token account should authorize the transfer of tokens back into the user’s wallet. Hint: create a CPI to the token program and use the staking pool authority to “sign” the transaction by passing in the seeds for the authority.
-
-// Each user needs an additional account that keeps track of how many tokens they have staked. Hint: this could be a PDA using the user’s pubkey and a string (like “state_account”) as seeds.
-
-// They should not be able to “unstake” more than they have staked. Hint: this would be a major security flaw if a user were able to withdraw more tokens than they have staked in a staking pool, allowing them to drain the entire pool if they wanted.
