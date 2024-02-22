@@ -1,4 +1,4 @@
-# Counter Program
+# Token Staking Program
 
 A simple smart contract that stakes a user token and unstake a user token.
 
